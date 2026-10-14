@@ -1,0 +1,51 @@
+{
+  "name": "site-watch",
+  "version": "0.1.0",
+  "description": "盯网站的通知/公告列表页，抓新条目并推送到多个机器人（Dsh-IM 九渠道 / QQ 开放平台 / 飞书 / 钉钉 / 企业微信 / Slack / Discord / Telegram）——零第三方依赖的 Node 脚本，同时是一个 DSH Skill。",
+  "type": "module",
+  "bin": {
+    "site-watch": "./site-watch.mjs"
+  },
+  "main": "./site-watch.mjs",
+  "exports": {
+    ".": "./site-watch.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "site-watch.mjs",
+    "config.json",
+    "SKILL.md",
+    "secrets.env.example",
+    "install.ps1",
+    "uninstall.ps1",
+    "test/"
+  ],
+  "scripts": {
+    "start": "node site-watch.mjs --plain",
+    "push": "node site-watch.mjs --push",
+    "test": "node test/push-selftest.mjs",
+    "channels": "node site-watch.mjs --list-channels"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-skill",
+    "deepseek-harness",
+    "dsh-im",
+    "web-monitor",
+    "scraper",
+    "rss-alternative",
+    "notification",
+    "qq-bot",
+    "feishu",
+    "dingtalk",
+    "wecom",
+    "telegram",
+    "gbk"
+  ],
+  "license": "MIT",
+  "author": "tangkarina",
+  "dependencies": {}
+}

@@ -1,0 +1,15 @@
+# 运行产物与本地私密文件：**不要提交**
+state/
+out/
+secrets.env
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# 临时与系统
+*.tmp
+*.log
+Thumbs.db
+.DS_Store

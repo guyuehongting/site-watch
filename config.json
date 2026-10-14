@@ -1,0 +1,96 @@
+{
+  "sources": [
+    {
+      "name": "demo-utf8",
+      "url": "./test/fixture-utf8.html",
+      "maxItems": 10,
+      "comment": "仓库自带的 UTF-8 测试页面。相对路径按 site-watch.mjs 所在目录解析，换成 https:// 就是真站点。"
+    },
+    {
+      "name": "demo-gbk",
+      "url": "./test/fixture-gbk.html",
+      "maxItems": 10,
+      "comment": "仓库自带的 GBK 测试页面，用来验证编码自动嗅探（很多学校/政府站点是 GBK）。"
+    },
+    {
+      "name": "school",
+      "enabled": false,
+      "url": "https://example.edu.cn/tzgg.htm",
+      "comment": "示例：把 url 换成你的通知公告列表页，再把 enabled 改成 true（或用 --source=school 强制跑）。纯静态列表用这几行就够，抓到导航垃圾再加 hrefInclude。",
+      "hrefInclude": "(info|content|detail|tzgg|notice|news)",
+      "hrefExclude": "(javascript:|^#|mailto:|\\.(jpg|jpeg|png|gif|zip|rar|doc|docx|xls|xlsx|pdf)$)",
+      "minTitleLen": 8,
+      "maxTitleLen": 90,
+      "maxItems": 20,
+      "timeoutMs": 20000
+    }
+  ],
+  "channels": [
+    {
+      "name": "dsh-im",
+      "type": "dshim",
+      "enabled": false,
+      "comment": "推荐：一条接口覆盖九个渠道（微信/飞书/钉钉/企业微信/QQ/Slack/Telegram/Discord/WhatsApp）。botId/targetId 在「设置 → IM机器人 → 齿轮」里复制。",
+      "baseUrl": "http://127.0.0.1:3080",
+      "botId": "",
+      "targetId": ""
+    },
+    {
+      "name": "qq-direct",
+      "type": "qq",
+      "enabled": false,
+      "comment": "QQ 开放平台直连，不依赖 dsh-im 是否在跑。AppSecret 放 secrets.env 的 QQ_APP_SECRET。",
+      "appId": "",
+      "secretEnv": "QQ_APP_SECRET",
+      "target": {
+        "kind": "user",
+        "userOpenId": ""
+      }
+    },
+    {
+      "name": "feishu",
+      "type": "webhook",
+      "enabled": false,
+      "format": "feishu",
+      "urlEnv": "FEISHU_WEBHOOK"
+    },
+    {
+      "name": "dingtalk",
+      "type": "webhook",
+      "enabled": false,
+      "format": "dingtalk",
+      "urlEnv": "DINGTALK_WEBHOOK"
+    },
+    {
+      "name": "wecom",
+      "type": "webhook",
+      "enabled": false,
+      "format": "wecom",
+      "urlEnv": "WECOM_WEBHOOK"
+    },
+    {
+      "name": "slack",
+      "type": "webhook",
+      "enabled": false,
+      "format": "slack",
+      "urlEnv": "SLACK_WEBHOOK"
+    },
+    {
+      "name": "discord",
+      "type": "webhook",
+      "enabled": false,
+      "format": "discord",
+      "urlEnv": "DISCORD_WEBHOOK"
+    },
+    {
+      "name": "telegram",
+      "type": "telegram",
+      "enabled": false,
+      "tokenEnv": "TELEGRAM_BOT_TOKEN",
+      "chatIdEnv": "TELEGRAM_CHAT_ID"
+    }
+  ],
+  "options": {
+    "maxChunkChars": 1800
+  }
+}
