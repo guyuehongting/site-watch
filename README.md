@@ -52,6 +52,43 @@ node site-watch.mjs --push --delay-ms=1000
 
 `--probe` 会给每个源一个判定：`✅ 可用` / `⚠ 0 条`（多半是 JS 渲染或不是列表页）/ `❌ 失败`（网址错或站点不通），并打印前 3 条标题+链接，方便你一眼判断要不要给它写 `itemPattern`。
 
+### 本地私有覆盖（不把清单写进仓库）
+
+`config.json` 旁边放一个 `config.local.json`，会被**深合并**上去（前者是公开模板，后者已被 `.gitignore` 排除）：
+
+```json
+{
+  "sourcesFile": "sources.local.txt",
+  "sources": [],
+  "defaults": { "maxItems": 12, "includeKeywords": ["竞赛", "大赛"], "excludeKeywords": ["选课", "考试"] },
+  "sourceOverrides": { "教务处-通知公告": { "includeKeywords": ["竞赛", "大赛"] } }
+}
+```
+
+- `defaults`：对**每个源**生效；`sourceOverrides["源名"]` 再按源覆盖；源自身字段优先
+- 把某项写成 `null` 可关掉它（例如"本来就是竞赛专栏的源"不需要关键词过滤）
+- `hrefInclude` 是提纯手段，但**抽不到时会自动退回不过滤**并打日志，避免一条规则把整个源打死
+
+### 意图过滤（决定"推什么"）
+
+`includeKeywords` 任一命中才留、`excludeKeywords` 命中任一就丢；数组按"任一匹配"拼成正则，也可以直接写正则字符串。实测校准过的经验：**别把"成绩/公示"放进 exclude**（竞赛成绩公示正是要看的），也别把"申报/项目/举办"放进 include（会放进一堆课程/教材申报）。
+
+### 详情页正文 + 附件（学校通知的价值常在附件里）
+
+```json
+"detail": { "enabled": true, "maxChars": 200, "maxPerRun": 8, "maxAttachments": 4, "delayMs": 200 }
+```
+
+给每个**新**条目多抓一次详情页，补上正文摘要与附件（PDF/DOC/XLS 等）链接；`--no-detail` 可关闭，`maxPerRun` 限制每个源每轮抓几个。
+
+⚠️ 诚实说明：摘要抓取对**静态渲染**的页面有效（实测成都大学多数栏目可用）；少数站点正文由 JS 拉取，此时脚本**宁可留空也不发导航垃圾**（推送仍然有标题+链接+附件）。要 100% 拿到这类正文需要 headless 浏览器，本项目不做。
+
+调试单个文章页的抽取效果：
+
+```bash
+node site-watch.mjs --summary=https://jw.cdu.edu.cn/info/1039/11830.htm --title="关于...的通知" --summary-debug
+```
+
 ### 装成 DSH Skill（可选）
 
 ```powershell

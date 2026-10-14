@@ -3,6 +3,11 @@ state/
 out/
 secrets.env
 
+# 本地私有配置（含你关注的站点清单，绝不进仓库）
+config.local.json
+*.local.txt
+sources.local.*
+
 # Node
 node_modules/
 npm-debug.log*

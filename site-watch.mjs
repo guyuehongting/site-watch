@@ -71,6 +71,7 @@ const adhocUrls =
     ? args.urls.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
 const delayMs = args["delay-ms"] !== undefined ? Number(args["delay-ms"]) : 300;
+const detailEnabled = args["no-detail"] !== true;
 
 /* ------------------------------------------------------------------ 工具 */
 
@@ -120,6 +121,34 @@ function readJson(file, fallback) {
 
 function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf8");
+}
+
+/** 深合并：对象递归合并；数组与标量由 override 直接替换 */
+function deepMerge(base, override) {
+  if (override === undefined) return base;
+  const bothObjects =
+    base && override && typeof base === "object" && typeof override === "object" &&
+    !Array.isArray(base) && !Array.isArray(override);
+  if (!bothObjects) return override;
+  const out = { ...base };
+  for (const [k, v] of Object.entries(override)) {
+    out[k] = k in base ? deepMerge(base[k], v) : v;
+  }
+  return out;
+}
+
+/**
+ * 读配置；若同目录存在 <名字>.local.json 就叠加上去。
+ * 例：config.json → config.local.json（本地私有覆盖，写进 .gitignore，不进仓库）
+ */
+function loadConfig(configPath) {
+  const base = readJson(configPath, undefined);
+  if (!base) return { config: undefined };
+  const ext = path.extname(configPath);
+  const localPath = `${configPath.slice(0, configPath.length - ext.length)}.local${ext}`;
+  const local = readJson(localPath, undefined);
+  if (!local) return { config: base };
+  return { config: deepMerge(base, local), localPath };
 }
 
 function today() {
@@ -344,10 +373,11 @@ function toAbsolute(href, base) {
 }
 
 /** 自动模式：在整页 <a> 里挑"像通知条目"的。 */
-function extractAuto(html, source) {
+function extractAutoOnce(html, source, useHrefInclude) {
   const minTitle = source.minTitleLen ?? 8;
   const maxTitle = source.maxTitleLen ?? 90;
-  const hrefInclude = source.hrefInclude ? new RegExp(source.hrefInclude, "i") : undefined;
+  const hrefInclude =
+    useHrefInclude && source.hrefInclude ? new RegExp(source.hrefInclude, "i") : undefined;
   const hrefExclude = source.hrefExclude
     ? new RegExp(source.hrefExclude, "i")
     : /(javascript:|^#|mailto:|\.(jpg|jpeg|png|gif|zip|rar|doc|docx|xls|xlsx|pdf)$)/i;
@@ -366,7 +396,9 @@ function extractAuto(html, source) {
     if (hrefExclude && hrefExclude.test(href)) continue;
     if (hrefInclude && !hrefInclude.test(href)) continue;
 
-    const title = stripTags(m[2]);
+    let title = stripTags(m[2]);
+    // 有些列表把日期/序号拼进了链接文本（如 "052026-06 【通知公告】…"），去掉这种前导噪声
+    title = title.replace(/^\d{1,2}\s*20\d{2}[-/.]\d{1,2}([-/.]\d{1,2})?\s*/, "").trim();
     if (title.length < minTitle || title.length > maxTitle) continue;
     if (titleInclude && !titleInclude.test(title)) continue;
     if (seenTitle.has(title)) continue;
@@ -393,6 +425,22 @@ function extractAuto(html, source) {
   return items;
 }
 
+/**
+ * hrefInclude 是"提纯"手段，但有些站点的真通知并不在指定路径下（实测：教务处通知公告、
+ * 校团委创新创业）。所以先按 hrefInclude 抽一遍，**抽不到就退回不过滤**并告警，
+ * 避免一条规则把整个源打死。
+ */
+function extractAuto(html, source) {
+  if (!source.hrefInclude) return extractAutoOnce(html, source, false);
+  const strict = extractAutoOnce(html, source, true);
+  if (strict.length > 0) return strict;
+  const loose = extractAutoOnce(html, source, false);
+  if (loose.length > 0) {
+    log(`  ↳ ${source.name}: hrefInclude=${source.hrefInclude} 一条都没匹配上，已退回不过滤（共 ${loose.length} 条）`);
+  }
+  return loose;
+}
+
 /** regex 模式：用 source.itemPattern 精确抓（分组名 url / title，或第 1/2 组）。 */
 function extractRegex(html, source) {
   const re = new RegExp(source.itemPattern, "gi");
@@ -415,12 +463,207 @@ function extractRegex(html, source) {
   return items;
 }
 
+/** 关键词规格 → 正则：数组按"任一命中"转义拼接，字符串直接当正则 */
+function matcherFrom(spec) {
+  if (!spec) return undefined;
+  if (Array.isArray(spec)) {
+    const parts = spec.filter(Boolean).map((s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return parts.length ? new RegExp(parts.join("|"), "i") : undefined;
+  }
+  return new RegExp(String(spec), "i");
+}
+
 function collectItems(html, source) {
   const items = source.itemPattern
     ? extractRegex(html, source)
     : extractAuto(html, source);
+  // 关键词过滤（在两种抽取模式之后统一做）：include 任一命中才留，exclude 命中就丢
+  const inc = matcherFrom(source.includeKeywords || source.includePattern);
+  const exc = matcherFrom(source.excludeKeywords || source.excludePattern);
+  let out = items;
+  if (inc) out = out.filter((it) => inc.test(it.title));
+  if (exc) out = out.filter((it) => !exc.test(it.title));
   const max = limitOverride ?? source.maxItems ?? 20;
-  return items.slice(0, Math.max(1, max));
+  return out.slice(0, Math.max(1, max));
+}
+
+/* ---- 详情页：正文摘要 + 附件（学校通知的价值常在附件里）---- */
+
+/**
+ * 从详情页里抠正文摘要。
+ * ★实测教训：学校 CMS 的 class="content/news/main" 经常套的是**导航菜单**，
+ *   直接按容器抓会得到"首页 机构设置 部门介绍…"；标题精确 indexOf 又常因标题被
+ *   标签拆开/空格差异而失败，退化成整页文本还是导航。
+ *   所以：① 先整块删掉 ul/ol/nav/header/footer/select（菜单几乎都在这里）
+ *        ② 用标题前缀做模糊锚定（整串 → 24 → 16 → 10 字）
+ *        ③ 兜底锚在"发布时间/来源/日期"这类标记之后
+ *        ④ 截到"上一条/分享到/版权所有"这类尾部标记之前
+ */
+/**
+ * ★实测踩过的坑：很多学校 CMS（ASP.NET/织梦系）用一个 <form> 或一个大 <ul> **包住整个文档**，
+ *   所以清理必须分开做：
+ *     · script/style：可以无限剥（内联脚本可能很长）
+ *     · nav/header/footer/select/ul/ol：**限量剥**（只剥 3000 字符以内的块 = 菜单），
+ *       避免把"包住全页的大 ul/form"一起吞掉（曾导致整页文本只剩 141 字，摘要全空）
+ *     · form：不剥（它经常就是全页容器）
+ */
+const STRIP_SCRIPT = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi;
+const STRIP_MENU = /<(nav|header|footer|select|ul|ol)\b[^>]*>[\s\S]{0,3000}?<\/\1>/gi;
+
+/** 去掉所有空白，同时保留"压缩串下标 → 原串下标"的映射（标题被标签/空格拆开也能对上） */
+function compactWithMap(s) {
+  const chars = [];
+  const map = [];
+  for (let i = 0; i < s.length; i += 1) {
+    if (!/[\s\u00a0]/.test(s[i])) {
+      chars.push(s[i]);
+      map.push(i);
+    }
+  }
+  return { str: chars.join(""), map };
+}
+
+function extractSummary(html, title, maxChars) {
+  const text = stripTags(
+    String(html).replace(STRIP_SCRIPT, " ").replace(STRIP_MENU, " "),
+  )
+    .replace(/&nbsp;|\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // 典型导航/侧栏词：用来给候选正文打分（越少越像正文）
+  const NAV_WORDS = [
+    "首页", "部门介绍", "岗位职责", "管理机构", "设为首页", "收藏本站", "院系网站",
+    "版权所有", "友情链接", "联系我们", "党群工作", "师资队伍", "教学工作", "学生工作",
+    "资料下载", "办事流程", "信息库", "当前位置", "打印本页", "微信扫描", "学校主页", "网站首页",
+  ];
+  const navHits = (s) => NAV_WORDS.filter((w) => s.slice(0, 140).includes(w)).length;
+
+  const TAILS = ["上一条", "下一条", "上一篇", "下一篇", "分享到", "分享：", "关闭窗口", "版权所有", "相关附件", "附件下载", "友情链接", "对外交流", "人才招聘"];
+  // 开头常见的"标题尾巴 + 发布元信息"：反复剥，直到剩下的像正文
+  const LEAD = [
+    /^[\s:：、,，\-|>»]+/,
+    /^\[[^\]]{1,14}\]\s*/,
+    /^(发布时间|发布日期|信息来源|信息源|来源|点击量|浏览次数|浏览人次|点击|查看|作者|时间|日期|编辑|审核|供稿|一审|二审|三审)[\s:：]*/,
+    /^20\d{2}\s*[-/.年]\s*\d{1,2}\s*([-/月.]\s*\d{1,2}\s*日?)?/,
+    /^\d{1,2}\s*[-/月.]\s*\d{1,2}\s*日?/,
+  ];
+  const clean = (s) => {
+    let b = s;
+    // 开头若是"列表标题的尾巴"（列表标题与页内 <h1> 被标签拆开时的常见现象），先切掉
+    const ctitle = compact(title);
+    if (ctitle && b) {
+      const { str: cb, map: bmap } = compactWithMap(b);
+      for (let n = Math.min(24, cb.length); n >= 3; n -= 1) {
+        if (ctitle.endsWith(cb.slice(0, n))) {
+          const at = bmap[n - 1];
+          if (at !== undefined) b = b.slice(at + 1);
+          break;
+        }
+      }
+    }
+    for (let guard = 0, changed = true; changed && guard < 14; guard += 1) {
+      changed = false;
+      for (const re of LEAD) {
+        const m = re.exec(b);
+        if (m && m[0]) {
+          b = b.slice(m[0].length);
+          changed = true;
+          break;
+        }
+      }
+    }
+    let end = b.length;
+    for (const m of TAILS) {
+      const i = b.indexOf(m);
+      if (i >= 20 && i < end) end = i;
+    }
+    return b.slice(0, end).replace(/\s+/g, " ").trim();
+  };
+
+  // ① 收集候选起点：标题（或其前缀）在页面里的**所有**出现位置
+  //   ★两个坑都踩过：只取第一次会落在导航/相关阅读上；用"去空白标题"比对"带空格正文"会漏掉真正的标题。
+  //   所以：整页压成无空白串 + 位置映射，所有出现位置都收进来，逐个生成候选再挑。
+  const compact = (s) => String(s || "").replace(/[\s\u00a0]+/g, "");
+  const t = compact(title);
+  const { str: ctext, map } = compactWithMap(text);
+  const starts = [];
+  const seenStart = new Set();
+  if (t) {
+    for (const n of [t.length, 28, 20, 14, 10]) {
+      const frag = t.slice(0, n);
+      if (frag.length < 8) continue;
+      let i = ctext.indexOf(frag);
+      while (i >= 0 && starts.length < 20) {
+        const at = map[i + frag.length - 1];
+        if (at !== undefined) {
+          const s0 = at + 1;
+          if (!seenStart.has(s0)) {
+            seenStart.add(s0);
+            starts.push(s0);
+          }
+        }
+        i = ctext.indexOf(frag, i + 1);
+      }
+    }
+  }
+  // ② 兜底起点：最后一个"发布/来源"类标记之后
+  const MARKS = ["发布时间", "发布日期", "发布者", "供稿", "来源：", "来源:", "审核：", "编辑：", "点击：", "日期："];
+  let mi = -1;
+  for (const m of MARKS) {
+    const i = text.lastIndexOf(m);
+    if (i > mi) mi = i;
+  }
+  if (mi >= 0) starts.push(mi);
+  if (starts.length === 0) return "";
+
+  // ③ 每个候选清洗后打分：导航词少者优，其次长者为优
+  const cands = starts.map((s) => clean(text.slice(s))).filter((b) => b.length >= 10);
+  if (args["summary-debug"] === true) {
+    process.stderr.write(
+      `[summary] 文本=${text.length} 压缩=${ctext.length} 标题命中位置=${starts.length} 候选=${cands.length}\n`,
+    );
+    cands.slice(0, 5).forEach((c, i) =>
+      process.stderr.write(`  cand${i} nav=${navHits(c)} len=${c.length} :: ${c.slice(0, 70)}\n`),
+    );
+  }
+  if (cands.length === 0) return "";
+  cands.sort((a, b) => navHits(a) - navHits(b) || b.length - a.length);
+  const best = cands[0];
+  // ④ 最好的候选仍然是导航（≥2 个导航词）→ 留空，不发垃圾
+  if (navHits(best) >= 2) return "";
+  return best.slice(0, maxChars);
+}
+
+async function fetchDetail(item, source, cfg) {
+  const timeout = cfg.timeoutMs ?? 8000;
+  const maxChars = cfg.maxChars ?? 220;
+  try {
+    const doc = await fetchDocument(item.url, timeout);
+    const summary = extractSummary(doc.html, item.title, maxChars);
+
+    const attachments = [];
+    const re = /<a\b[^>]*href\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi;
+    let a;
+    while ((a = re.exec(doc.html)) !== null) {
+      const href = a[2] ?? a[3] ?? a[4] ?? "";
+      const text = stripTags(a[5]);
+      const isFile = /\.(pdf|docx?|xlsx?|pptx?|zip|rar|7z)(\?|#|$)/i.test(href);
+      const filePath = /(upload|attach|ueditor|file|download|_upload)/i.test(href);
+      // 只认"附件N/报名表/申报书…"这类**并且链接像文件**的，避免把"资料下载""下载中心"当成附件
+      const isAttach =
+        /附件\s*[【\d一二三四五六七八九十：:、.]/.test(text) ||
+        /报名表|申报书|承诺书|汇总表|登记表|报名汇总/.test(text);
+      if (!isFile && !(isAttach && filePath)) continue;
+      const abs = toAbsolute(href, doc.finalUrl || item.url);
+      if (!abs || attachments.some((x) => x.url === abs)) continue;
+      attachments.push({ name: (text || abs.split("/").pop()).slice(0, 40), url: abs });
+      if (attachments.length >= (cfg.maxAttachments ?? 5)) break;
+    }
+    return { summary, attachments, charset: doc.charset };
+  } catch (err) {
+    return { summary: "", attachments: [], error: redact(err.message) };
+  }
 }
 
 /* ------------------------------------------------------------------ 存储 */
@@ -447,6 +690,8 @@ function archive(items, meta) {
   items.forEach((it, i) => {
     lines.push(`${i + 1}. ${it.title}${it.date ? `（${it.date}）` : ""}`);
     lines.push(`   ${it.url}`);
+    if (it.summary) lines.push(`   摘要：${it.summary}`);
+    (it.attachments || []).forEach((a) => lines.push(`   📎 ${a.name} → ${a.url}`));
   });
   lines.push("");
   const header = fs.existsSync(file) ? "" : `# 站点监控 ${today()}\n\n`;
@@ -626,6 +871,8 @@ function renderPlain(groups, allCount) {
     g.items.forEach((it, i) => {
       lines.push(`${i + 1}. ${it.title}${it.date ? `（${it.date}）` : ""}`);
       lines.push(`   ${it.url}`);
+      if (it.summary) lines.push(`   ${it.summary}`);
+      (it.attachments || []).forEach((a) => lines.push(`   📎 ${a.name}\n      ${a.url}`));
     });
   }
   return lines.join("\n");
@@ -635,13 +882,21 @@ async function main() {
   ensureDirs();
   const configPath =
     typeof args.config === "string" ? path.resolve(args.config) : CONFIG_PATH;
-  const config = readJson(configPath, undefined);
+  const { config, localPath } = loadConfig(configPath);
   if (!config) {
     log(`读不到配置：${configPath}`);
     process.exit(2);
   }
+  if (localPath) log(`已叠加本地私有覆盖：${path.basename(localPath)}`);
   // 来源 = config.json 的 sources + sources.txt（批量）+ --urls=
-  const allSources = buildSourceList(config, configPath);
+  // config.defaults 对每个源生效（如 includeKeywords / detail / delay）；
+  // config.sourceOverrides["源名"] 再按源覆盖（写成 null 可关掉某项，例如本来就全是竞赛的栏目）；
+  // 最后源自身的字段优先。
+  const allSources = buildSourceList(config, configPath).map((s) => ({
+    ...(config.defaults || {}),
+    ...((config.sourceOverrides || {})[s.name] || {}),
+    ...s,
+  }));
   if (allSources.length === 0) {
     log("没有任何来源：config.json 的 sources 为空，也没有可读的 sources.txt / --urls=");
     process.exit(2);
@@ -659,6 +914,15 @@ async function main() {
   }
   if (probeOnly) {
     await runProbe(sources);
+    return;
+  }
+
+  // --summary=<url>：直接在某个真实文章页上验证「正文摘要 + 附件」抽取（调试用）
+  if (typeof args.summary === "string") {
+    const url = args.summary;
+    const cfg = { ...(config.detail || {}), maxChars: Number(args["max-chars"] || 400) };
+    const d = await fetchDetail({ url, title: args.title || "" }, { name: "summary" }, cfg);
+    process.stdout.write(`URL   : ${url}\n摘要  : ${d.summary || "(空)"}\n附件  : ${(d.attachments || []).map((a) => a.name).join(" | ") || "(无)"}\n`);
     return;
   }
 
@@ -688,6 +952,23 @@ async function main() {
       total += items.length;
       const newItems = items.filter((it) => !seen[it.key]);
       for (const it of newItems) seen[it.key] = nowIso();
+
+      // 详情页：给新条目补正文摘要与附件（只对 http(s)，有预算上限，失败不影响主流程）
+      const detailCfg = { ...(config.detail || {}), ...(source.detail || {}) };
+      let detailCount = 0;
+      if (detailEnabled && detailCfg.enabled !== false && newItems.length) {
+        const budget = Math.max(0, Number(detailCfg.maxPerRun ?? 8));
+        for (const it of newItems) {
+          if (detailCount >= budget) break;
+          if (!/^https?:\/\//i.test(it.url)) continue; // 本地测试固件没有详情页
+          const d = await fetchDetail(it, source, detailCfg);
+          detailCount += 1;
+          if (d.summary) it.summary = d.summary;
+          if (d.attachments && d.attachments.length) it.attachments = d.attachments;
+          await sleep(Number(detailCfg.delayMs ?? 150));
+        }
+      }
+
       fresh.push(...newItems);
       results.push({
         source: source.name,
@@ -699,7 +980,10 @@ async function main() {
         newItems,
         ok: true,
       });
-      log(`${source.name}: 抓到 ${items.length} 条，其中新的 ${newItems.length} 条（编码 ${doc.charset}）`);
+      log(
+        `${source.name}: 抓到 ${items.length} 条，其中新的 ${newItems.length} 条（编码 ${doc.charset}）` +
+          (detailCount ? `，取详情 ${detailCount} 条` : ""),
+      );
     } catch (err) {
       failed += 1;
       results.push({
