@@ -576,10 +576,12 @@ function extractSummary(html, title, maxChars) {
   const clean = (s) => {
     let b = s;
     // 开头若是"列表标题的尾巴"（列表标题与页内 <h1> 被标签拆开时的常见现象），先切掉
+    // ★上限要够大：实测有 30+ 字的标题尾巴（如"5年度国家级、省级大学生创业训练项目…的通知"），
+    //   上限设 24 会切不掉，于是摘要前面挂着一截标题。
     const ctitle = compact(title);
     if (ctitle && b) {
       const { str: cb, map: bmap } = compactWithMap(b);
-      for (let n = Math.min(24, cb.length); n >= 3; n -= 1) {
+      for (let n = Math.min(60, cb.length); n >= 3; n -= 1) {
         if (ctitle.endsWith(cb.slice(0, n))) {
           const at = bmap[n - 1];
           if (at !== undefined) b = b.slice(at + 1);
