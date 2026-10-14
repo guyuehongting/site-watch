@@ -1,0 +1,16 @@
+# site-watch 批量来源清单（config.json 的 sourcesFile 指向本文件）
+#
+# 一行一个网址；想给源起名就写「名字 | 网址」（也接受 Tab 分隔）。
+# 以 # 开头是注释，空行忽略；同一网址只在 config.json 里出现一次才不会被重复收录。
+#
+# —— 下面两条是仓库自带的测试页（可以直接 node site-watch.mjs --probe 看效果）——
+demo-utf8 | ./test/fixture-utf8.html
+demo-gbk  | ./test/fixture-gbk.html
+#
+# —— 真实站点照这个格式往下加（把 # 去掉即可）——
+# 教务处-通知   | https://jwc.example.edu.cn/tzgg.htm
+# 研究生院-招生 | https://yjsy.example.edu.cn/zsxx/list.htm
+# 图书馆-公告   | https://lib.example.edu.cn/news/notice.htm
+#
+# 提示：不确定某个网址能不能自动识别，先别写进来，直接试
+#   node site-watch.mjs --probe --urls=https://a.edu.cn/tzgg.htm,https://b.edu.cn/notice.htm

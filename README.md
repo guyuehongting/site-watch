@@ -35,6 +35,23 @@ node site-watch.mjs --plain
 node site-watch.mjs --push
 ```
 
+### 网址很多时：批量清单 + 先探测
+
+```bash
+# 1) 把所有网址丢进 sources.txt（一行一个；想命名就写「名字 | 网址」，# 开头是注释）
+#    config.json 里的 "sourcesFile": "sources.txt" 已经指好它了
+# 2) 先探测一遍：每个源能不能自动识别、识别到几条、编码对不对（不落库、不推送）
+node site-watch.mjs --probe
+
+# 想临时试一串、不动配置：
+node site-watch.mjs --probe --urls=https://a.edu.cn/tzgg.htm,https://b.edu.cn/notice.htm
+
+# 源多了给站点留点余地：源之间默认间隔 300ms，可调
+node site-watch.mjs --push --delay-ms=1000
+```
+
+`--probe` 会给每个源一个判定：`✅ 可用` / `⚠ 0 条`（多半是 JS 渲染或不是列表页）/ `❌ 失败`（网址错或站点不通），并打印前 3 条标题+链接，方便你一眼判断要不要给它写 `itemPattern`。
+
 ### 装成 DSH Skill（可选）
 
 ```powershell
@@ -45,7 +62,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 ## 配置
 
-`config.json` 三块：`sources`（抓什么）、`channels`（推到哪）、`options`。
+`config.json` 三块：`sources`（抓什么）、`channels`（推到哪）、`options`；另有 `sourcesFile` 指向批量清单（默认 `sources.txt`，一行一个网址，也支持「名字 | 网址」）。
+
+同一 URL 只算一个源（`config.json` 优先于 `sources.txt`），没起名的源按域名自动生成短名。
 
 ### sources —— 加一个站点最小只要两行
 
@@ -95,6 +114,9 @@ JS 渲染的页面自动模式抓不到，此时用 `itemPattern` 匹配它请�
 | 单次条数覆盖 | `node site-watch.mjs --limit=30` |
 | 看已启用渠道 | `node site-watch.mjs --list-channels` |
 | 指定别的配置文件 | `node site-watch.mjs --config=D:\my.json` |
+| 探测所有源（不落库不推送） | `node site-watch.mjs --probe` |
+| 临时探测一串网址 | `node site-watch.mjs --probe --urls=https://a/x.htm,https://b/y.htm` |
+| 调整源之间的间隔（默认 300ms） | `node site-watch.mjs --push --delay-ms=1000` |
 
 退出码：`0` 正常 / `2` 用法或配置错 / `3` 推送全失败 / `4` 所有源抓取失败。
 

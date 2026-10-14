@@ -1,4 +1,5 @@
 {
+  "sourcesFile": "sources.txt",
   "sources": [
     {
       "name": "demo-utf8",

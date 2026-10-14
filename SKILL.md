@@ -30,6 +30,8 @@ metadata:
 | 需求 | 命令 |
 | --- | --- |
 | 只抓某个源 | `node site-watch.mjs --source=school --plain` |
+| 源很多时先探测一遍（不落库不推送） | `node site-watch.mjs --probe` |
+| 临时探测一串网址、不动配置 | `node site-watch.mjs --probe --urls=https://a/x.htm,https://b/y.htm` |
 | 抓取+落库+推送 | `node site-watch.mjs --push` |
 | 只推前 2 条验证链路 | `node site-watch.mjs --push --test` |
 | 只推指定渠道 | `node site-watch.mjs --push --channels=qq-im,feishu` |
@@ -48,7 +50,9 @@ metadata:
 
 ## 加一个新站点
 
-编辑 `config.json` 的 `sources`，最小只需两行：
+**一个站点**：编辑 `config.json` 的 `sources`，最小只需两行。
+
+**一堆站点**（常见：教务处/研究生院/学院/图书馆各一个栏目页）：写进 `sources.txt`，一行一个网址，可选 `名字 | 网址`；`config.json` 的 `sourcesFile` 已指向它。同一 URL 只算一个源，没起名的按域名自动生成短名。加完先 `--probe` 过一遍，确认每个源都能识别，再交给定时任务。
 
 ```json
 { "name": "school", "url": "https://xxx.edu.cn/tzgg.htm", "maxItems": 20 }

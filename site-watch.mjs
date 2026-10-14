@@ -64,6 +64,13 @@ const onlyChannels =
     ? args.channels.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
 const limitOverride = args.limit !== undefined ? Number(args.limit) : undefined;
+/* 批量相关：--probe 只探测不落库；--urls=a,b,c 临时试一串网址；--delay-ms 控制源之间的间隔 */
+const probeOnly = args.probe === true || args.check === true;
+const adhocUrls =
+  typeof args.urls === "string"
+    ? args.urls.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+const delayMs = args["delay-ms"] !== undefined ? Number(args["delay-ms"]) : 300;
 
 /* ------------------------------------------------------------------ 工具 */
 
@@ -127,6 +134,121 @@ function nowIso() {
 
 function log(line) {
   process.stderr.write(`[site-watch] ${line}\n`);
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, Math.max(0, ms)));
+}
+
+/** URL → 自动短名（没写名字的批量源用），例如 https://jwc.abc.edu.cn/tzgg.htm → jwc-tzgg */
+function autoName(url) {
+  const slug = (s) => (s || "source").replace(/\.(html?|php|aspx?|jsp|asp)$/i, "").replace(/[^A-Za-z0-9._-]/g, "");
+  if (!/^https?:\/\//i.test(url)) {
+    // 本地路径（测试固件）：用文件名当名字
+    return slug(path.basename(url).replace(/\.(html?|php)$/i, "")) || "source";
+  }
+  try {
+    const u = new URL(url);
+    const seg = u.pathname.split("/").filter(Boolean).pop() || "index";
+    const host = u.hostname.replace(/^www\./, "").split(".")[0];
+    return `${slug(host)}-${slug(seg)}`.slice(0, 40) || "source";
+  } catch {
+    return "source";
+  }
+}
+
+/**
+ * 汇总来源：config.json 的 sources + sources.txt（批量，一行一个网址）+ --urls=
+ * sources.txt 每行：`网址` 或 `名字 | 网址`（也接受 Tab/空格分隔），# 开头是注释。
+ * 同一 URL 只保留第一次出现的那条（config.json 优先）。
+ */
+function buildSourceList(config, configPath) {
+  // --urls= 一旦给出就是"独立试这一串"：不要再和 config/sources.txt 混在一起，
+  // 否则重复 URL 会在去重时把临时源挤掉（曾经的实际 bug）。
+  if (adhocUrls.length) {
+    const uniq = [...new Set(adhocUrls)];
+    return uniq.map((url) => ({ name: autoName(url), url, adhoc: true }));
+  }
+
+  const list = [...(config.sources || [])];
+  const seenUrls = new Set(list.map((s) => s.url));
+
+  const file = config.sourcesFile
+    ? path.resolve(path.dirname(configPath), config.sourcesFile)
+    : undefined;
+  if (file && fs.existsSync(file)) {
+    for (const raw of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      let name;
+      let url = line;
+      const m = line.match(/^(.+?)\s*[|\t]\s*(https?:\/\/\S+)$/);
+      if (m) {
+        name = m[1].trim();
+        url = m[2].trim();
+      }
+      if (!/^https?:\/\//i.test(url) && !/^[./]/.test(url) && !/^[A-Za-z]:[\\/]/.test(url)) continue;
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      list.push({ name: name || autoName(url), url, fromListFile: true });
+    }
+  }
+
+  for (const url of adhocUrls) {
+    if (seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    list.push({ name: autoName(url), url, adhoc: true });
+  }
+  return list;
+}
+
+/** --probe：只探测每个源能识别出什么，不写 state/out，用来批量筛网址 */
+async function runProbe(sources) {
+  const rows = [];
+  for (const s of sources) {
+    const t0 = Date.now();
+    try {
+      const doc = await fetchDocument(s.url, s.timeoutMs);
+      const items = collectItems(doc.html, s);
+      rows.push({
+        name: s.name,
+        url: s.url,
+        ok: true,
+        charset: doc.charset,
+        ms: Date.now() - t0,
+        items,
+      });
+    } catch (err) {
+      rows.push({ name: s.name, url: s.url, ok: false, error: redact(err.message), ms: Date.now() - t0, items: [] });
+    }
+    await sleep(delayMs);
+  }
+
+  process.stdout.write(`探测 ${rows.length} 个源（--probe，不落库、不推送）\n\n`);
+  for (const r of rows) {
+    if (!r.ok) {
+      process.stdout.write(`❌ 失败   ${r.name}\n   ${r.url}\n   ${r.error}\n\n`);
+      continue;
+    }
+    const mark = r.items.length === 0 ? "⚠ 0 条 " : r.items.length < 3 ? "⚠ 偏少" : "✅ 可用";
+    process.stdout.write(
+      `${mark}  ${r.name}   [${r.charset} ${r.ms}ms] 识别到 ${r.items.length} 条\n   ${r.url}\n`,
+    );
+    r.items.slice(0, 3).forEach((it, i) =>
+      process.stdout.write(`     ${i + 1}. ${it.title.slice(0, 62)}\n        ${it.url.slice(0, 92)}\n`),
+    );
+    process.stdout.write("\n");
+  }
+  const good = rows.filter((r) => r.ok && r.items.length > 0).length;
+  const zero = rows.filter((r) => r.ok && r.items.length === 0).length;
+  const bad = rows.filter((r) => !r.ok).length;
+  process.stdout.write(`汇总：可用 ${good} / 识别不到 ${zero} / 抓取失败 ${bad}\n`);
+  if (zero || bad) {
+    process.stdout.write(
+      "建议：识别不到的源多半是 JS 渲染或非列表页 —— 把那条列表项的 HTML 片段发我写 itemPattern；抓取失败的多半是网址写错或站点暂时不通。\n",
+    );
+  }
+  process.exit(bad === rows.length ? 4 : 0);
 }
 
 /* ------------------------------------------------------------------ 抓取 */
@@ -518,14 +640,26 @@ async function main() {
     log(`读不到配置：${configPath}`);
     process.exit(2);
   }
-  // 显式 --source=名字 时忽略 enabled（明确点名就该跑）；
-  // 否则跳过 enabled:false 的源，让模板配置开箱即用、不报"占位站点抓取失败"。
-  const sources = (config.sources || []).filter((s) =>
-    onlySource ? s.name === onlySource : s.enabled !== false,
-  );
-  if (sources.length === 0) {
-    log(onlySource ? `配置里没有名为 ${onlySource} 的源` : "配置里没有启用任何 sources");
+  // 来源 = config.json 的 sources + sources.txt（批量）+ --urls=
+  const allSources = buildSourceList(config, configPath);
+  if (allSources.length === 0) {
+    log("没有任何来源：config.json 的 sources 为空，也没有可读的 sources.txt / --urls=");
     process.exit(2);
+  }
+  // --urls= 给了就只跑这几个（"试试这串"）；否则 --source 点名 > --probe 全看 > 默认只跑启用的
+  const sources = allSources.filter((s) => {
+    if (adhocUrls.length) return s.adhoc === true;
+    if (onlySource) return s.name === onlySource;
+    if (probeOnly) return true;
+    return s.enabled !== false;
+  });
+  if (sources.length === 0) {
+    log(onlySource ? `没有名为 ${onlySource} 的源` : "没有启用的源");
+    process.exit(2);
+  }
+  if (probeOnly) {
+    await runProbe(sources);
+    return;
   }
 
   const channels = (config.channels || [])
@@ -579,6 +713,7 @@ async function main() {
       log(`${source.name}: 抓取失败 — ${redact(err.message)}`);
     }
     results[results.length - 1].startedAt = started;
+    await sleep(delayMs); // 源之间留间隔：几十个源时别把对方站点打疼
   }
 
   saveSeen(seen);
