@@ -567,6 +567,9 @@ function extractSummary(html, title, maxChars) {
     /^[\s:：、,，\-|>»]+/,
     /^\[[^\]]{1,14}\]\s*/,
     /^(发布时间|发布日期|信息来源|信息源|来源|点击量|浏览次数|浏览人次|点击|查看|作者|时间|日期|编辑|审核|供稿|一审|二审|三审)[\s:：]*/,
+    // 审稿人名单形态："李新琼 二审 胡庆 三审 李敏 职称 学历 学院" —— 名字夹在标签之间
+    /^[\u4e00-\u9fa5]{2,4}\s*(一审|二审|三审)\s*/,
+    /^(姓名|职称|学历|学院|部门|单位|次|人次)\s*/,
     /^20\d{2}\s*[-/.年]\s*\d{1,2}\s*([-/月.]\s*\d{1,2}\s*日?)?/,
     /^\d{1,2}\s*[-/月.]\s*\d{1,2}\s*日?/,
   ];
@@ -705,6 +708,54 @@ function saveSeen(seen, keep = 5000) {
   writeJson(SEEN_PATH, seen);
 }
 
+/** 按时间倒序（新的在前）；没有日期的排最后 */
+function sortByTime(items) {
+  return [...items].sort((a, b) => {
+    if (a.date && b.date) return a.date === b.date ? 0 : a.date < b.date ? 1 : -1;
+    if (a.date) return -1;
+    if (b.date) return 1;
+    return 0;
+  });
+}
+
+/** 时间倒序的扁平清单（每条带完整原网址）——默认输出与推送格式 */
+function renderTimeline(items, title) {
+  const list = sortByTime(items);
+  const lines = [`📌 ${title || "站点新通知"} ${today()}（共 ${list.length} 条，按时间倒序）`];
+  for (const it of list) {
+    lines.push("");
+    lines.push(`${it.date || "日期未知"}  【${it.source}】`);
+    lines.push(it.title);
+    lines.push(it.url);
+    if (it.summary) lines.push(`摘要：${it.summary}`);
+    for (const a of it.attachments || []) lines.push(`📎 ${a.name}\n${a.url}`);
+  }
+  return lines.join("\n");
+}
+
+/** 归档：时间倒序写进 out/YYYY-MM-DD.md，并追加 out/items.jsonl */
+function archiveTimeline(items, meta = {}) {
+  if (items.length === 0) return;
+  const list = sortByTime(items);
+  const file = path.join(OUT_DIR, `${today()}.md`);
+  const lines = [`## ${meta.title || "新通知"}（${meta.time || nowIso().slice(11, 16)}）`, ""];
+  for (const it of list) {
+    lines.push(`- **${it.date || "日期未知"}**  [${it.source}] ${it.title}`);
+    lines.push(`  ${it.url}`);
+    if (it.summary) lines.push(`  > ${it.summary}`);
+    for (const a of it.attachments || []) lines.push(`  - 📎 ${a.name}：${a.url}`);
+  }
+  lines.push("");
+  const header = fs.existsSync(file) ? "" : `# 站点监控 ${today()}\n\n`;
+  fs.appendFileSync(file, header + lines.join("\n"), "utf8");
+  fs.appendFileSync(
+    JSONL_PATH,
+    list.map((it) => JSON.stringify({ ...it, at: nowIso() })).join("\n") + "\n",
+    "utf8",
+  );
+}
+
+/** 按源分组的旧格式（--sort=source 时用） */
 function archive(items, meta) {
   if (items.length === 0) return;
   const file = path.join(OUT_DIR, `${today()}.md`);
@@ -1037,10 +1088,16 @@ async function main() {
 
   saveSeen(seen);
 
-  // 落库：只存"新条目"，避免重复膨胀
-  for (const r of results) {
-    if (r.newItems.length) {
-      archive(r.newItems, { title: r.source, time: nowIso().slice(11, 16) });
+  const sortMode = String(args.sort || config.options?.sort || "time").toLowerCase();
+
+  // 落库：只存"新条目"；默认按时间倒序写成一份扁平清单（每条带原网址）
+  if (fresh.length) {
+    if (sortMode === "source") {
+      for (const r of results) {
+        if (r.newItems.length) archive(r.newItems, { title: r.source, time: nowIso().slice(11, 16) });
+      }
+    } else {
+      archiveTimeline(fresh, { title: "新通知", time: nowIso().slice(11, 16) });
     }
   }
 
@@ -1052,10 +1109,13 @@ async function main() {
         2,
       ) + "\n",
     );
-  } else {
+  } else if (sortMode === "source") {
     const groups = results.map((r) => ({ source: r.source, items: r.items }));
-    const text = renderPlain(groups, fresh.length);
-    process.stdout.write(text + "\n");
+    process.stdout.write(renderPlain(groups, fresh.length) + "\n");
+  } else {
+    process.stdout.write(
+      renderTimeline(results.flatMap((r) => r.items), "站点新通知") + "\n",
+    );
   }
 
   if (!wantPush) return;
@@ -1070,10 +1130,7 @@ async function main() {
   }
 
   const pushItems = pushTest ? fresh.slice(0, 2) : fresh;
-  const body = renderPlain(
-    [{ source: pushTest ? "链路测试（只发前 2 条）" : "新通知", items: pushItems }],
-    pushItems.length,
-  );
+  const body = renderTimeline(pushItems, pushTest ? "链路测试（只发前 2 条）" : "新通知");
   const maxChars = config.options?.maxChunkChars ?? 1800;
   const chunks = chunkText(body, maxChars);
 
