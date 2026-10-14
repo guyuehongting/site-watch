@@ -406,17 +406,32 @@ function extractAutoOnce(html, source, useHrefInclude) {
     const url = toAbsolute(href, resolveBase(source.url));
     if (!url) continue;
 
-    // 标题附近 120 字符内找日期（多数学校站点列表项带 2026-10-13 / 2026/10/13）
-    const around = stripTags(html.slice(m.index, m.index + 400));
-    const dm =
-      /(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})/.exec(around) ||
-      /(\d{1,2})[-/](\d{1,2})\s/.exec(around);
+    // 日期：★必须往前也看——实测 cxcyxy 的 <span class="sspan">2026-05-26</span> 在 <a> **之前**；
+    //        jxgc 更是拆开写：<span>11</span><br>2026-06（日在前、年-月在后）
+    const around = stripTags(html.slice(Math.max(0, m.index - 250), m.index + 400));
     let date;
-    if (dm) {
-      date =
-        dm.length === 4
-          ? `${dm[1]}-${String(dm[2]).padStart(2, "0")}-${String(dm[3]).padStart(2, "0")}`
-          : `${new Date().getFullYear()}-${String(dm[1]).padStart(2, "0")}-${String(dm[2]).padStart(2, "0")}`;
+    const full = /(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})/.exec(around); // 年-月-日
+    const dSplit = /(\d{1,2})\D{0,24}(20\d{2})[-/.年](\d{1,2})/.exec(around); // 日 … 年-月
+    const md = /(\d{1,2})[-/](\d{1,2})\s/.exec(around); // 月-日（无年份）
+    let y;
+    let mo;
+    let dd;
+    if (full) {
+      [, y, mo, dd] = full.map(Number);
+    } else if (dSplit) {
+      const m1 = dSplit.map(Number);
+      dd = m1[1];
+      y = m1[2];
+      mo = m1[3];
+    } else if (md) {
+      const m2 = md.map(Number);
+      y = new Date().getFullYear();
+      mo = m2[1];
+      dd = m2[2];
+    }
+    // ★校验：实测抓到过 2026-26-06 这种非法日期（页面里别的数字被误配），宁可不出日期也不出错日期
+    if (y && mo >= 1 && mo <= 12 && dd >= 1 && dd <= 31) {
+      date = `${y}-${String(mo).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
     }
 
     seenTitle.add(title);
@@ -483,6 +498,13 @@ function collectItems(html, source) {
   let out = items;
   if (inc) out = out.filter((it) => inc.test(it.title));
   if (exc) out = out.filter((it) => !exc.test(it.title));
+  // 只保留带日期的条目：通知公告类栏目里混着的导航项（学院名/办公室名）通常没有日期
+  if (source.requireDate) out = out.filter((it) => it.date);
+  // 时效窗口：首次接入时别把几年前的旧闻当"新通知"推出去
+  if (source.maxAgeDays) {
+    const cutoff = Date.now() - Number(source.maxAgeDays) * 86400000;
+    out = out.filter((it) => !it.date || Date.parse(`${it.date}T00:00:00`) >= cutoff);
+  }
   const max = limitOverride ?? source.maxItems ?? 20;
   return out.slice(0, Math.max(1, max));
 }
@@ -938,6 +960,7 @@ async function main() {
   const seen = loadSeen();
   const results = [];
   const fresh = [];
+  const globalUrlSeen = new Set(); // 跨源去重：同一通知常同时出现在父栏目和子栏目里
   let failed = 0;
   let total = 0;
 
@@ -950,8 +973,19 @@ async function main() {
         key: `${source.name}|${it.url}`,
       }));
       total += items.length;
-      const newItems = items.filter((it) => !seen[it.key]);
-      for (const it of newItems) seen[it.key] = nowIso();
+      const newItemsRaw = items.filter((it) => !seen[it.key]);
+      for (const it of newItemsRaw) seen[it.key] = nowIso();
+      // ★跨源去重：同一条通知被两个栏目同时抓到（实测教务处两个栏目完全重合）只推一次
+      const newItems = [];
+      let dupSkipped = 0;
+      for (const it of newItemsRaw) {
+        if (globalUrlSeen.has(it.url)) {
+          dupSkipped += 1;
+          continue;
+        }
+        globalUrlSeen.add(it.url);
+        newItems.push(it);
+      }
 
       // 详情页：给新条目补正文摘要与附件（只对 http(s)，有预算上限，失败不影响主流程）
       const detailCfg = { ...(config.detail || {}), ...(source.detail || {}) };
@@ -982,6 +1016,7 @@ async function main() {
       });
       log(
         `${source.name}: 抓到 ${items.length} 条，其中新的 ${newItems.length} 条（编码 ${doc.charset}）` +
+          (dupSkipped ? `，跨源重复跳过 ${dupSkipped} 条` : "") +
           (detailCount ? `，取详情 ${detailCount} 条` : ""),
       );
     } catch (err) {
