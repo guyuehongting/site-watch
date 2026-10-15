@@ -16,5 +16,6 @@ pnpm-debug.log*
 # 临时与系统
 *.tmp
 *.log
+test/.tmp/
 Thumbs.db
 .DS_Store

@@ -19,11 +19,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.dirname(HERE);
 const PORT = 18799;
 
+// ★临时文件放仓库内（test/.tmp），不用 os.tmpdir()：
+//   实测在 DSH 等沙箱环境里系统临时目录是禁写的（EPERM），会导致自检根本跑不起来。
+const TMP = path.join(HERE, ".tmp");
+fs.mkdirSync(TMP, { recursive: true });
+
 // 每次跑都生成唯一标题与唯一链接 → 保证「是新条目」→ 一定会真的走推送
 // （去重 key 是「源名|URL」，只改标题不改 URL 的话第二次跑就会被去重跳过）
 const runId = Date.now();
 const marker = `自检条目 ${new Date(runId).toISOString()}`;
-const fixture = path.join(os.tmpdir(), `site-watch-selftest-${runId}.html`);
+const fixture = path.join(TMP, `selftest-${runId}.html`);
 fs.writeFileSync(
   fixture,
   `<html><head><meta charset="utf-8"></head><body><ul>
@@ -43,7 +48,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const cfgPath = path.join(os.tmpdir(), `site-watch-selftest-${Date.now()}.json`);
+const cfgPath = path.join(TMP, `selftest-${Date.now()}.json`);
 fs.writeFileSync(
   cfgPath,
   JSON.stringify(
