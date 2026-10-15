@@ -129,7 +129,7 @@ JS 渲染的页面自动模式抓不到，此时用 `itemPattern` 匹配它请�
 
 | type | 覆盖 | 需要填 |
 | --- | --- | --- |
-| `dshim` | **一条接口覆盖九个渠道**：微信 / 飞书 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord / WhatsApp | `botId` + `targetId`（从 Dsh-IM 的「设置 → IM机器人 → 齿轮」复制），`baseUrl` 默认 `http://127.0.0.1:3080` |
+| `dshim` | **一条接口覆盖九个渠道**：微信 / 飞书 / 钉钉 / 企业微信 / QQ / Slack / Telegram / Discord / WhatsApp | `botId` + `targetId`（从 Dsh-IM 的「设置 → IM机器人 → 齿轮」复制）。`baseUrl` **可留空**：桌面端每次启动动态分配 web 端口，脚本会自动探测（`3080` 与 `43120-43140`，靠契约指纹确认），要固定就写 `baseUrl` 或设环境变量 `DSH_IM_BASE` |
 | `qq` | QQ 开放平台直连（不依赖 Dsh-IM 在跑） | `appId` + `secrets.env` 的 `QQ_APP_SECRET` + `target.userOpenId` / `target.groupOpenId` |
 | `webhook` | 飞书 / 钉钉 / 企业微信 / Slack / Discord 群机器人 | `format` + `urlEnv`（指向 `secrets.env` 里的键） |
 | `telegram` | Telegram Bot API | `tokenEnv` + `chatIdEnv` |

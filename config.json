@@ -31,8 +31,8 @@
       "name": "dsh-im",
       "type": "dshim",
       "enabled": false,
-      "comment": "推荐：一条接口覆盖九个渠道（微信/飞书/钉钉/企业微信/QQ/Slack/Telegram/Discord/WhatsApp）。botId/targetId 在「设置 → IM机器人 → 齿轮」里复制。",
-      "baseUrl": "http://127.0.0.1:3080",
+      "comment": "推荐：一条接口覆盖九个渠道（微信/飞书/钉钉/企业微信/QQ/Slack/Telegram/Discord/WhatsApp）。botId/targetId 在「设置 → IM机器人 → 齿轮」里复制。baseUrl 留空即可：桌面端每次启动会动态分配 web 端口（profile 里的 ctx.webStartup.port），脚本会自动探测（3080 与 43120-43140）；要固定就写这里，或设环境变量 DSH_IM_BASE。端口号在 DSH Desktop 的界面 URL 里能看到。",
+      "baseUrl": "",
       "botId": "",
       "targetId": ""
     },

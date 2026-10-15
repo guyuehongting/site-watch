@@ -817,8 +817,54 @@ async function postJson(url, body, headers = {}, timeoutMs = 20000) {
 }
 
 /* --- ① dsh-im：一条接口覆盖九个渠道（微信/飞书/钉钉/企微/QQ/Slack/Telegram/Discord/WhatsApp） --- */
+// ★实测坑：桌面端每次启动动态分配 web 端口（profile 里的 `ctx.webStartup.port ?? 3080`），
+//   而且**不落到任何配置文件**里，所以 baseUrl 不能硬编码——写死 3080 在桌面端环境下推不出去。
+//   这里先按配置/env 试，再扫一小段常见端口，用"契约签名"确认是不是 dsh-im：
+//   空 body 会被它判成 bad-request（而不是 404/HTML/401），这就是指纹。
+const DSHIM_PROBE_BASES = ["http://127.0.0.1:3080"];
+for (let p = 43120; p <= 43140; p += 1) DSHIM_PROBE_BASES.push(`http://127.0.0.1:${p}`);
+let dshimBaseCache = "";
+
+async function probeDshIm(base, timeoutMs = 1200) {
+  try {
+    const res = await fetch(`${base.replace(/\/$/, "")}/api/dsh-im/delivery/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const txt = await res.text();
+    return /Invalid delivery request|unknown-bot/.test(txt);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveDshImBase(ch) {
+  if (dshimBaseCache) return dshimBaseCache;
+  const preferred = [ch.baseUrl, secretOf("DSH_IM_BASE")].filter(Boolean);
+  for (const base of preferred) {
+    if (await probeDshIm(base)) {
+      dshimBaseCache = base;
+      return base;
+    }
+  }
+  for (const base of DSHIM_PROBE_BASES) {
+    if (preferred.includes(base)) continue;
+    if (await probeDshIm(base)) {
+      log(`  ↳ dsh-im 端口自动发现：${base}（配置里的 ${preferred[0] || "默认 3080"} 没响应）`);
+      dshimBaseCache = base;
+      return base;
+    }
+  }
+  throw new Error(
+    `找不到 dsh-im 投递服务（试过 ${preferred.length + DSHIM_PROBE_BASES.length} 个地址）。` +
+      `用 DSH_IM_BASE 环境变量或 channels[].baseUrl 指定，地址在 DSH Desktop 的界面 URL 里能看到。`,
+  );
+}
+
 async function sendDshIm(ch, text) {
-  const base = ch.baseUrl || secretOf("DSH_IM_BASE") || "http://127.0.0.1:3080";
+  const base = await resolveDshImBase(ch);
   const url = `${base.replace(/\/$/, "")}/api/dsh-im/delivery/messages`;
   const out = await postJson(url, {
     botId: ch.botId || secretOf(ch.botIdEnv || ""),
